@@ -70,7 +70,17 @@ class TM2020Interface(RealTimeGymInterface):
     def initialize_common(self):
         if self.gamepad:
             import vgamepad as vg
-            self.j = vg.VX360Gamepad()
+            # ViGEm sometimes fails to plug in the virtual controller on the first attempt
+            # (e.g. while Windows is still setting up the Xbox 360 device), so retry a few times:
+            for attempt in range(1, 6):
+                try:
+                    self.j = vg.VX360Gamepad()
+                    break
+                except RuntimeError as e:
+                    if attempt == 5:
+                        raise
+                    logging.warning(f" virtual gamepad creation failed ({e}), retrying ({attempt}/5)...")
+                    time.sleep(2.0)
             logging.debug(" virtual joystick in use")
         self.window_interface = WindowInterface("Trackmania")
         self.window_interface.move_and_resize()

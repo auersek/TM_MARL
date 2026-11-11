@@ -3,6 +3,9 @@
 .vs/
 .idea/
 
+# Configs
+TmrlData
+
 # Vagrant
 .vagrant/
 

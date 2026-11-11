@@ -1,0 +1,12 @@
+# Python virtual environment
+.venv/
+
+# Local copy of TMRL's data folder (configs may contain API keys; checkpoints/weights are large)
+TmrlData/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# wandb local run files
+wandb/
