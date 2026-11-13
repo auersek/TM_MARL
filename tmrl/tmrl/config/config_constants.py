@@ -68,6 +68,9 @@ PRAGMA_PROGRESS = RTGYM_INTERFACE.endswith("LIDARPROGRESS")
 if PRAGMA_PROGRESS:
     PRAGMA_LIDAR = True
 LIDAR_BLACK_THRESHOLD = [55, 55, 55]  # [88, 88, 88] for tiny road, [55, 55, 55] FOR BASIC ROAD
+# LIDAR distances (pixels, ~290 on average) are divided by this before reaching the networks and the replay memory.
+# 1.0 keeps them raw (tmrl's behaviour, used by Lidar runs 1-4); ~300 brings them to the scale of the other inputs.
+LIDAR_INPUT_DIVISOR = float(ENV_CONFIG.get("LIDAR_INPUT_DIVISOR", 1.0))
 REWARD_CONFIG = ENV_CONFIG["REWARD_CONFIG"]
 SLEEP_TIME_AT_RESET = ENV_CONFIG["SLEEP_TIME_AT_RESET"]  # 1.5 to start in a Markov state with the lidar
 IMG_HIST_LEN = ENV_CONFIG["IMG_HIST_LEN"]  # 4 without RNN, 1 with RNN

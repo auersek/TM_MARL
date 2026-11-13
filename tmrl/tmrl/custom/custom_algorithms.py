@@ -21,6 +21,37 @@ import logging
 # Soft Actor-Critic ====================================================================================================
 
 
+def make_optimizer(name, params, lr, betas=None, weight_decay=None, role=""):
+    """
+    Builds a torch optimizer from the ALG config values.
+
+    Shared by the agents and by the checkpoint updater so that both always build the same optimizer.
+
+    Args:
+        name (str): one of "adam", "adamw", "sgd" (anything else falls back to SGD with a warning)
+        params: iterable of parameters to optimize
+        lr (float): learning rate
+        betas (tuple): Adam/AdamW betas, None for the torch defaults (ignored for SGD)
+        weight_decay (float): weight decay, None for the torch default
+        role (str): "actor" or "critic", only used in the warning message
+    """
+    name = name.lower()
+    if name == "adam":
+        optimizer_cls = Adam
+    elif name == "adamw":
+        optimizer_cls = AdamW
+    else:
+        if name != "sgd":
+            logging.warning(f"{role} optimizer {name} is not valid, defaulting to sgd")
+        optimizer_cls = SGD
+    kwargs = {"lr": lr}
+    if optimizer_cls in (Adam, AdamW) and betas is not None:
+        kwargs["betas"] = tuple(betas)
+    if weight_decay is not None:
+        kwargs["weight_decay"] = weight_decay
+    return optimizer_cls(params, **kwargs)
+
+
 @dataclass(eq=0)
 class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
     observation_space: type
@@ -56,36 +87,8 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
 
         self.optimizer_actor = self.optimizer_actor.lower()
         self.optimizer_critic = self.optimizer_critic.lower()
-        if self.optimizer_actor not in ["adam", "adamw", "sgd"]:
-            logging.warning(f"actor optimizer {self.optimizer_actor} is not valid, defaulting to sgd")
-        if self.optimizer_critic not in ["adam", "adamw", "sgd"]:
-            logging.warning(f"critic optimizer {self.optimizer_critic} is not valid, defaulting to sgd")
-        if self.optimizer_actor == "adam":
-            pi_optimizer_cls = Adam
-        elif self.optimizer_actor == "adamw":
-            pi_optimizer_cls = AdamW
-        else:
-            pi_optimizer_cls = SGD
-        pi_optimizer_kwargs = {"lr": self.lr_actor}
-        if self.optimizer_actor in ["adam, adamw"] and self.betas_actor is not None:
-            pi_optimizer_kwargs["betas"] = tuple(self.betas_actor)
-        if self.l2_actor is not None:
-            pi_optimizer_kwargs["weight_decay"] = self.l2_actor
-
-        if self.optimizer_critic == "adam":
-            q_optimizer_cls = Adam
-        elif self.optimizer_critic == "adamw":
-            q_optimizer_cls = AdamW
-        else:
-            q_optimizer_cls = SGD
-        q_optimizer_kwargs = {"lr": self.lr_critic}
-        if self.optimizer_critic in ["adam, adamw"] and self.betas_critic is not None:
-            q_optimizer_kwargs["betas"] = tuple(self.betas_critic)
-        if self.l2_critic is not None:
-            q_optimizer_kwargs["weight_decay"] = self.l2_critic
-
-        self.pi_optimizer = pi_optimizer_cls(self.model.actor.parameters(), **pi_optimizer_kwargs)
-        self.q_optimizer = q_optimizer_cls(itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()), **q_optimizer_kwargs)
+        self.pi_optimizer = self.make_actor_optimizer()
+        self.q_optimizer = self.make_critic_optimizer()
 
         # entropy coefficient:
 
@@ -101,6 +104,15 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
+
+    def make_actor_optimizer(self):
+        """Builds a fresh actor optimizer from the agent's optimizer_actor / lr_actor / betas_actor / l2_actor."""
+        return make_optimizer(self.optimizer_actor, self.model.actor.parameters(), self.lr_actor, self.betas_actor, self.l2_actor, "actor")
+
+    def make_critic_optimizer(self):
+        """Builds a fresh critic optimizer from the agent's optimizer_critic / lr_critic / betas_critic / l2_critic."""
+        params = itertools.chain(self.model.q1.parameters(), self.model.q2.parameters())
+        return make_optimizer(self.optimizer_critic, params, self.lr_critic, self.betas_critic, self.l2_critic, "critic")
 
     def get_actor(self):
         return self.model_nograd.actor

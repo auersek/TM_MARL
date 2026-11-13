@@ -8,6 +8,7 @@ from pandas import DataFrame
 
 # local imports
 from tmrl.util import pandas_dict
+from tmrl.run_monitor import get_monitor
 
 import logging
 
@@ -72,6 +73,7 @@ class TrainingOffline:
         buffer = interface.retrieve_buffer()
         self.memory.append(buffer)
         self.total_samples += len(buffer)
+        get_monitor(self).add_samples(buffer.memory)
 
     def check_ratio(self, interface):
         ratio = self.total_updates / self.total_samples if self.total_samples > 0.0 and self.total_samples >= self.start_training else -1.0

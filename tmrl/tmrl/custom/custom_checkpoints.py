@@ -1,7 +1,6 @@
 import os
 import tarfile
 from pathlib import Path
-import itertools
 
 from torch.optim import Adam
 import numpy as np
@@ -66,6 +65,14 @@ def update_memory(run_instance):
     return run_instance
 
 
+def optimizer_hparams(optimizer):
+    """
+    Returns the hyperparameters of an optimizer that can be set from config.json, for comparison.
+    """
+    group = optimizer.param_groups[0]
+    return dict(optimizer=type(optimizer).__name__, lr=group["lr"], betas=tuple(group.get("betas", ())), weight_decay=group.get("weight_decay"))
+
+
 def update_run_instance(run_instance, training_cls):
     """
     Updates the checkpoint after loading with compatible values from config.json
@@ -77,6 +84,14 @@ def update_run_instance(run_instance, training_cls):
     Returns:
         run_instance: the updated checkpoint
     """
+    # the replay memory stores LIDARs as scaled when they were collected; never mix two scales in one memory:
+    if cfg.PRAGMA_LIDAR:
+        stored_divisor = getattr(run_instance.memory, "lidar_input_divisor", 1.0)  # older checkpoints stored raw LIDARs
+        if stored_divisor != cfg.LIDAR_INPUT_DIVISOR:
+            raise RuntimeError(f"The replay memory of this checkpoint holds LIDARs divided by {stored_divisor}, but "
+                               f"LIDAR_INPUT_DIVISOR is {cfg.LIDAR_INPUT_DIVISOR} in config.json. Mixing both scales would "
+                               f"corrupt training: set LIDAR_INPUT_DIVISOR back to {stored_divisor}, or use a new RUN_NAME.")
+
     # check whether we should start a new experiment entirely and keep only the memory:
     if "RESET_TRAINING" in cfg.TMRL_CONFIG and cfg.TMRL_CONFIG["RESET_TRAINING"]:
         new_run_instance = training_cls()
@@ -84,6 +99,17 @@ def update_run_instance(run_instance, training_cls):
         new_run_instance = update_memory(new_run_instance)
         new_run_instance.total_samples = len(new_run_instance.memory)
         return new_run_instance
+
+    # the network architecture is pickled with the checkpoint, so CRITIC_LAYER_NORM cannot change on an existing run:
+    if cfg.PRAGMA_LIDAR and not cfg.PRAGMA_RNN:
+        model = run_instance.agent.model
+        critic = model.q1 if hasattr(model, "q1") else model.qs[0]
+        has_layer_norm = any(isinstance(module, torch.nn.LayerNorm) for module in critic.modules())
+        wants_layer_norm = bool(cfg.TMRL_CONFIG["ALG"].get("CRITIC_LAYER_NORM", False))
+        if has_layer_norm != wants_layer_norm:
+            raise RuntimeError(f"The critic of this checkpoint was built {'with' if has_layer_norm else 'without'} LayerNorm, but "
+                               f"CRITIC_LAYER_NORM is {wants_layer_norm} in config.json. A resumed run keeps its pickled "
+                               f"architecture: set CRITIC_LAYER_NORM back to {has_layer_norm}, or use a new RUN_NAME.")
 
     # update training Agent:
     ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
@@ -101,22 +127,37 @@ def update_run_instance(run_instance, training_cls):
         alpha = ALG_CONFIG["ALPHA"]
 
         if ALG_NAME == "SAC":
-            if run_instance.agent.lr_actor != lr_actor:
-                old = run_instance.agent.lr_actor
-                run_instance.agent.lr_actor = lr_actor
-                run_instance.agent.pi_optimizer = Adam(run_instance.agent.model.actor.parameters(), lr=lr_actor)
-                logging.info(f"Actor optimizer reinitialized with new lr: {lr_actor} (old lr: {old}).")
+            # Same config lookups as the SAC AGENT partial in config_objects.py:
+            agent = run_instance.agent
+            agent.lr_actor = lr_actor
+            agent.lr_critic = lr_critic
+            agent.optimizer_actor = ALG_CONFIG["OPTIMIZER_ACTOR"].lower()
+            agent.optimizer_critic = ALG_CONFIG["OPTIMIZER_CRITIC"].lower()
+            agent.betas_actor = ALG_CONFIG["BETAS_ACTOR"] if "BETAS_ACTOR" in ALG_CONFIG else None
+            agent.betas_critic = ALG_CONFIG["BETAS_CRITIC"] if "BETAS_CRITIC" in ALG_CONFIG else None
+            agent.l2_actor = ALG_CONFIG["L2_ACTOR"] if "L2_ACTOR" in ALG_CONFIG else None
+            agent.l2_critic = ALG_CONFIG["L2_CRITIC"] if "L2_CRITIC" in ALG_CONFIG else None
 
-            if run_instance.agent.lr_critic != lr_critic:
-                old = run_instance.agent.lr_critic
-                run_instance.agent.lr_critic = lr_critic
-                run_instance.agent.q_optimizer = Adam(itertools.chain(run_instance.agent.model.q1.parameters(), run_instance.agent.model.q2.parameters()), lr=lr_critic)
-                logging.info(f"Critic optimizer reinitialized with new lr: {lr_critic} (old lr: {old}).")
+            # Build the optimizers config.json asks for, and swap them in only if they differ from the checkpointed ones
+            # (comparing the actual optimizer settings, so that the optimizer state is kept whenever nothing changed):
+            for role, attr, make_optimizer in (("Actor", "pi_optimizer", agent.make_actor_optimizer),
+                                               ("Critic", "q_optimizer", agent.make_critic_optimizer)):
+                old_hparams = optimizer_hparams(getattr(agent, attr))
+                new_optimizer = make_optimizer()
+                new_hparams = optimizer_hparams(new_optimizer)
+                if new_hparams != old_hparams:
+                    setattr(agent, attr, new_optimizer)
+                    logging.info(f"{role} optimizer reinitialized with {new_hparams} (old: {old_hparams}).")
 
-        if run_instance.agent.learn_entropy_coef != learn_entropy_coef:
-            logging.warning(f"Cannot switch entropy learning.")
+        switched_entropy_learning = run_instance.agent.learn_entropy_coef != learn_entropy_coef
+        if switched_entropy_learning:
+            # Switch between fixed alpha (SAC v1) and learned alpha (SAC v2) on an existing checkpoint.
+            # The entropy coefficient (re)starts from ALPHA in config.json; the block below creates the
+            # optimizer (learned alpha) or the constant tensor (fixed alpha) that the agent needs.
+            run_instance.agent.learn_entropy_coef = learn_entropy_coef
+            logging.info(f"Entropy learning switched to {learn_entropy_coef} (alpha starts from {alpha}).")
 
-        if run_instance.agent.lr_entropy != lr_entropy or run_instance.agent.alpha != alpha:
+        if switched_entropy_learning or run_instance.agent.lr_entropy != lr_entropy or run_instance.agent.alpha != alpha:
             run_instance.agent.lr_entropy = lr_entropy
             run_instance.agent.alpha = alpha
             device = run_instance.device or ("cuda" if torch.cuda.is_available() else "cpu")

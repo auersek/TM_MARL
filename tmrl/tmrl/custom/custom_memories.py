@@ -2,6 +2,7 @@ import random
 import numpy as np
 
 from tmrl.memory import TorchMemory
+import tmrl.config.config_constants as cfg
 
 
 # LOCAL BUFFER COMPRESSION ==============================
@@ -194,6 +195,8 @@ class MemoryTM(TorchMemory):
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
         self.start_imgs_offset = max(0, self.min_samples - self.imgs_obs)
         self.start_acts_offset = max(0, self.min_samples - self.act_buf_len)
+        # scale of the LIDARs stored in this memory, checked when a checkpoint is resumed (see custom_checkpoints.py):
+        self.lidar_input_divisor = cfg.LIDAR_INPUT_DIVISOR
         super().__init__(memory_size=memory_size,
                          batch_size=batch_size,
                          dataset_path=dataset_path,

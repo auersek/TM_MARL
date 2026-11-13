@@ -20,6 +20,7 @@ from tmrl.actor import ActorModule
 from tmrl.util import dump, load, partial_to_dict
 import tmrl.config.config_constants as cfg
 import tmrl.config.config_objects as cfg_obj
+from tmrl import run_monitor
 
 import logging
 
@@ -203,6 +204,12 @@ class TrainerInterface:
         self.__endpoint.notify(groups={'trainers': -1})  # retrieve everything
         return res
 
+    def stop(self):
+        """
+        Stops the network endpoint (its background process would otherwise keep the trainer process alive).
+        """
+        self.__endpoint.stop()
+
 
 def log_environment_variables():
     """
@@ -265,11 +272,13 @@ def iterate_epochs(run_cls,
                 t1 = time.time()
                 run_instance = updater_fn(run_instance, run_cls)
                 logging.info(f"Checkpoint updated in {time.time() - t1} seconds.")
+        run_monitor.on_trainer_start(run_instance)
 
         while run_instance.epoch < run_instance.epochs:
             # time.sleep(1)  # on network file systems writing files is asynchronous and we need to wait for sync
             yield run_instance.run_epoch(interface=interface)  # yield stats data frame (this makes this function a generator)
-            if run_instance.epoch % epochs_between_checkpoints == 0:
+            checkpoint_saved = run_instance.epoch % epochs_between_checkpoints == 0
+            if checkpoint_saved:
                 logging.info(f" saving checkpoint...")
                 t1 = time.time()
                 dump_run_instance_fn(run_instance, checkpoint_path)
@@ -278,6 +287,9 @@ def iterate_epochs(run_cls,
                 # del run_instance
                 # gc.collect()  # garbage collection
                 # run_instance = load_run_instance_fn(checkpoint_path)
+            # keep copies of good checkpoints, and stop if the policy has collapsed (see run_monitor.py):
+            if run_monitor.after_epoch(run_instance, checkpoint_path, checkpoint_saved):
+                break
 
     finally:
         if checkpoint_path.endswith("_remove_on_exit") and exists(checkpoint_path):
@@ -398,6 +410,7 @@ class Trainer:
             dump_run_instance_fn=self.dump_run_instance_fn,
             load_run_instance_fn=self.load_run_instance_fn,
             updater_fn=self.updater_fn)
+        self.interface.stop()  # training is over (max epochs or collapsed run), let the process exit
 
     def run_with_wandb(self,
                        entity=cfg.WANDB_ENTITY,
@@ -426,6 +439,7 @@ class Trainer:
                        dump_run_instance_fn=self.dump_run_instance_fn,
                        load_run_instance_fn=self.load_run_instance_fn,
                        updater_fn=self.updater_fn)
+        self.interface.stop()  # training is over (max epochs or collapsed run), let the process exit
 
 
 # ROLLOUT WORKER: ===================================

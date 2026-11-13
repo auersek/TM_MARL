@@ -32,6 +32,7 @@ if cfg.PRAGMA_LIDAR:
         POLICY = SquashedGaussianRNNActor
     else:
         TRAIN_MODEL = MLPActorCritic if ALG_NAME == "SAC" else REDQMLPActorCritic
+        TRAIN_MODEL = partial(TRAIN_MODEL, critic_layer_norm=ALG_CONFIG.get("CRITIC_LAYER_NORM", False))
         POLICY = SquashedGaussianMLPActor
 else:
     assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
